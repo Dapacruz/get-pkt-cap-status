@@ -21,15 +21,24 @@ def import_env(path):
         return None
 
 
-def parse_pkt_cap_status(firewall, data):
+def parse_admins(fw, output):
+    # Remove header
+    output = "\n".join(output.split("\n")[4:])
+    output = set(re.findall(r"^\w_[^\s]+", output, flags=re.M))
+    return {"Logged In Admins": ", ".join(output)}
+
+
+def parse_pkt_cap_status(fw, output):
     # Check to see if a packet capture is running
-    enabled = re.search(r"Packet capture\n\s{2}Enabled:\s+.(yes|no)", data, flags=re.M)
+    enabled = re.search(
+        r"Packet capture\n\s{2}Enabled:\s+.(yes|no)", output, flags=re.M
+    )
     enabled = enabled.group(1) if enabled is not None else ""
     if enabled == "yes":
         # Parse packet filters
         packet_filter = re.search(
             r"Packet filter\n\s{2}Enabled:\s+.(?:yes|no)\n\s{2}Match.*?\n\s{2}(Index.*non-IP)",
-            data,
+            output,
             flags=re.M | re.S,
         )
         if packet_filter:
@@ -41,46 +50,51 @@ def parse_pkt_cap_status(firewall, data):
         else:
             packet_filter = ""
 
-        results = {
-            "Firewall": firewall,
-            "Enabled": enabled,
+        return {
+            "Firewall": fw,
             "Filter": "\n".join(packet_filter),
         }
-
-        return results
+    return {}
 
 
 def get_pkt_cap_status(fw, user, pw):
-    PAN = {
+    pan_handler = {
         "device_type": "paloalto_panos",
         "host": fw,
         "username": user,
         "password": pw,
         "conn_timeout": 60,
     }
-    # TODO: Add `show admins` and parse
-    commands = ["debug dataplane packet-diag show setting"]
+    connect_params = {
+        "strip_prompt": True,
+        "strip_command": True,
+        "expect_string": r">",
+    }
 
-    output = list()
+    status = dict()
     try:
-        with ConnectHandler(**PAN) as net_connect:
-            for cmd in commands:
-                output.append(
-                    net_connect.send_command(
-                        cmd,
-                        strip_prompt=True,
-                        strip_command=True,
-                        expect_string=r">",
-                    )
+        with ConnectHandler(**pan_handler) as net_connect:
+            # Get packet capture status
+            output = net_connect.send_command(
+                "debug dataplane packet-diag show setting",
+                **connect_params,
+            )
+            status.update(parse_pkt_cap_status(fw, output))
+            if status:
+                # Get logged in admins
+                output = net_connect.send_command(
+                    "show admins",
+                    **connect_params,
                 )
+                status.update(parse_admins(fw, output))
     except ssh_exception.NetmikoAuthenticationException:
         sys.stderr.write(f"Authentication failed: {fw}\n")
     except ssh_exception.NetmikoTimeoutException:
         sys.stderr.write(f"Connection timed out: {fw}\n")
     except Exception as e:
-        sys.stderr.write(f"{fw}:\n{e}")
+        sys.stderr.write(f"{fw}:{e}\n")
 
-    return output
+    return status
 
 
 def send_slack_msg(data, webhook):
@@ -94,7 +108,7 @@ def send_slack_msg(data, webhook):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*Device Name:* <https://{firewall}|{firewall}>\n*Description:* Packet capture is running\n*Packet Filters:*{filter}",
+                        "text": f"*Device Name:* <https://{firewall}|{firewall}>\n*Description:* Packet capture is running\n*Logged In Admins:* {data['Logged In Admins']}\n*Packet Filter:*{filter}",
                     },
                 }
             ],
@@ -114,9 +128,7 @@ def send_slack_msg(data, webhook):
 def worker(fw, user, pw, webhook):
     pkt_cap_status = get_pkt_cap_status(fw, user, pw)
     if pkt_cap_status:
-        pkt_cap_status = parse_pkt_cap_status(fw, pkt_cap_status[0])
-        if pkt_cap_status:
-            send_slack_msg(pkt_cap_status, webhook)
+        send_slack_msg(pkt_cap_status, webhook)
 
 
 def main():
