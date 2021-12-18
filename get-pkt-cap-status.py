@@ -3,14 +3,17 @@
 import json
 import os
 import re
-import requests
 import sys
 import threading
 import time
+from pathlib import Path
 
+import requests
 from netmiko import ConnectHandler, ssh_exception
 
 from panorama import Panorama
+
+script_dir = Path(__file__).parent.absolute()
 
 
 def import_env(path):
@@ -92,7 +95,7 @@ def get_pkt_cap_status(fw, user, pw):
     except ssh_exception.NetmikoTimeoutException:
         sys.stderr.write(f"Connection timed out: {fw}\n")
     except Exception as e:
-        sys.stderr.write(f"{fw}:{e}\n")
+        sys.stderr.write(f"{fw}: {e}\n")
 
     return status
 
@@ -135,7 +138,7 @@ def main():
     t1_start = time.time()
 
     global table_rows
-    env = import_env("env.json")
+    env = import_env(script_dir / "env.json")
 
     panorama = Panorama(env["panorama_api_key"], env["panorama"])
     firewalls = panorama.get_firewalls()
